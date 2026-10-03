@@ -3,7 +3,7 @@
     <header class="page-head">
       <div>
         <h2>保护校验管理</h2>
-        <p class="page-desc">维护校验记录，围绕校验编号、装置名称、校验项目、动作值做登记、筛选与状态流转。</p>
+        <p class="page-desc">校验记录的保护类型沿用装置台账口径；装置进入「需更换」后不再进待校验清单，校验判定合格会同步到定值整定待整定清单。</p>
       </div>
       <div class="page-actions">
         <button class="btn primary" type="button" @click="openCreate">登记校验记录</button>
@@ -12,15 +12,28 @@
     </header>
 
     <div class="stat-row">
-      <article v-for="item in stats" :key="item.label" class="stat-card">
-        <span class="stat-label">{{ item.label }}</span>
-        <strong class="stat-value">{{ item.value }}</strong>
+      <article class="stat-card">
+        <span class="stat-label">待校验（不含需更换装置）</span>
+        <strong class="stat-value">{{ countByStatus['待校验'] ?? 0 }}</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">校验中</span>
+        <strong class="stat-value">{{ countByStatus['校验中'] ?? 0 }}</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">校验合格</span>
+        <strong class="stat-value">{{ countByStatus['校验合格'] ?? 0 }}</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">校验不合格</span>
+        <strong class="stat-value">{{ countByStatus['校验不合格'] ?? 0 }}</strong>
       </article>
     </div>
 
-    <p class="status-legend">
-      <span v-for="item in statusSummary" :key="item.status" class="legend-item">
-        {{ item.status }}：{{ item.count }}
+    <p v-if="excludedRows.length" class="notice-bar">
+      {{ excludedRows.length }} 条待校验记录因所属装置已进入「需更换」而挂起，不进待校验清单：
+      <span v-for="row in excludedRows" :key="String(row.id)" class="chip">
+        {{ row.校验编号 }} / {{ row.装置名称 }}
       </span>
     </p>
 
@@ -28,6 +41,14 @@
       <label v-for="field in filterFields" :key="field" class="filter-item">
         <span>{{ field }}</span>
         <input v-model="filters[field]" :placeholder="`按${field}检索`" />
+      </label>
+      <label class="filter-item">
+        <span>校验日期 起</span>
+        <input v-model="dateFrom" type="date" />
+      </label>
+      <label class="filter-item">
+        <span>校验日期 止</span>
+        <input v-model="dateTo" type="date" />
       </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
@@ -47,91 +68,126 @@
           <td>{{ row.status }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
-              :key="action"
+              v-if="row.status === '待校验'"
               class="link"
               type="button"
-              @click="runAction(action, row)"
+              @click="runRelay(row.id, '提交校验')"
             >
-              {{ action }}
+              提交校验
+            </button>
+            <button
+              v-if="row.status === '校验中' || row.status === '待校验'"
+              class="link"
+              type="button"
+              @click="runRelay(row.id, '判定合格')"
+            >
+              判定合格
+            </button>
+            <button
+              v-if="row.status === '校验中' || row.status === '待校验'"
+              class="link danger"
+              type="button"
+              @click="runRelay(row.id, '标记不合格')"
+            >
+              标记不合格
             </button>
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无保护校验数据，可先登记校验记录</td>
+          <td :colspan="columns.length + 2" class="empty-state">暂无符合条件的保护校验记录</td>
         </tr>
       </tbody>
     </table>
 
     <footer class="page-foot">
       <span>共 {{ total }} 条保护校验记录</span>
+      <span v-if="okMessage" class="ok-text">{{ okMessage }}</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 
-import {
-  downloadEntries,
-  listEntries,
-  moduleMeta,
-  runAction as applyAction,
-} from '@/api/local-service'
+import { downloadEntries } from '@/api/local-service'
+import { listRelayRows, runRelayAction } from '@/api/protection-service'
+import { useFilterStore } from '@/stores/filters'
 import type { EntryRow } from '@/data/types'
 
-const meta = moduleMeta('relaytest')
-const columns = ["校验编号", "装置名称", "校验项目", "动作值", "返回值", "校验人", "校验日期", "校验状态"]
-const actions = ["提交校验", "判定合格", "标记不合格"]
-const statuses = ["待校验", "校验中", "校验合格", "校验不合格"]
-const stats = [{"label": "待校验装置", "value": 0}, {"label": "校验合格装置", "value": 0}, {"label": "校验不合格装置", "value": 0}]
+const FILTER_KEY = 'relaytest'
+const filterStore = useFilterStore()
+
+const columns = ['校验编号', '装置名称', '保护类型', '校验项目', '动作值', '返回值', '校验人', '校验日期']
+const filterFields = ['校验编号', '装置名称', '保护类型', '校验项目', '校验人']
 
 const rows = ref<EntryRow[]>([])
+const excludedRows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
-const statusSummary = computed(() =>
-  statuses.map((status: string) => ({
-    status,
-    count: rows.value.filter((row) => String(row.status) === status).length,
-  })),
-)
+const okMessage = ref('')
+
+const saved = filterStore.get(FILTER_KEY)
+const filters = reactive<Record<string, string>>({
+  ...Object.fromEntries(filterFields.map((field) => [field, ''])),
+  ...saved,
+})
+const dateFrom = ref(String(saved.__dateFrom ?? ''))
+const dateTo = ref(String(saved.__dateTo ?? ''))
+
+const countByStatus = computed<Record<string, number>>(() => {
+  const counter: Record<string, number> = {}
+  for (const row of listRelayRows().items) {
+    counter[String(row.status)] = (counter[String(row.status)] ?? 0) + 1
+  }
+  return counter
+})
 
 function resetFilters() {
-  filters.value = {}
+  for (const field of filterFields) filters[field] = ''
+  dateFrom.value = ''
+  dateTo.value = ''
+  filterStore.clear(FILTER_KEY)
   reload()
 }
 
 function exportRows() {
-  downloadEntries(meta.key)
+  downloadEntries(FILTER_KEY)
 }
 
 function openCreate() {
   errorMessage.value = '校验记录登记入口尚未接入审批流'
 }
 
-function runAction(action: string, row: EntryRow) {
-  errorMessage.value = ''
-  const result = applyAction(meta.key, Number(row.id), action)
+function runRelay(id: number, action: string) {
+  const result = runRelayAction(id, action)
+  reload()
   if (!result.ok) {
     errorMessage.value = result.message
     return
   }
-  reload()
+  okMessage.value = result.message
 }
 
 function reload() {
   errorMessage.value = ''
+  okMessage.value = ''
   try {
-    const payload = listEntries(meta.key, filters.value)
-    rows.value = payload.items
-    total.value = payload.total
+    const { items, excluded } = listRelayRows()
+    excludedRows.value = excluded
+    const pairs = Object.entries(filters).filter(([, value]) => value.trim() !== '')
+    let matched = items.filter((row) =>
+      pairs.every(([field, value]) => String(row[field] ?? '').includes(value.trim())),
+    )
+    if (dateFrom.value) matched = matched.filter((row) => String(row.校验日期) >= dateFrom.value)
+    if (dateTo.value) matched = matched.filter((row) => String(row.校验日期) <= dateTo.value)
+    rows.value = matched
+    total.value = matched.length
+    filterStore.set(FILTER_KEY, { ...filters, __dateFrom: dateFrom.value, __dateTo: dateTo.value })
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '保护校验列表读取失败'
   }
 }
 
-onMounted(reload)
+reload()
 </script>
