@@ -22,6 +22,10 @@
       <span v-for="item in statusSummary" :key="item.status" class="legend-item">
         {{ item.status }}：{{ item.count }}
       </span>
+      <label class="legend-item legend-check">
+        <input v-model="pendingOnly" type="checkbox" @change="reload" />
+        只看待整定清单（含校验合格同步单）
+      </label>
     </p>
 
     <form class="filter-bar" @submit.prevent="reload">
@@ -82,7 +86,7 @@ import {
 import type { EntryRow } from '@/data/types'
 
 const meta = moduleMeta('settingvalue')
-const columns = ["定值单号", "所属装置", "定值项目", "整定值", "计算依据", "整定人", "审核人", "定值状态"]
+const columns = ["定值单号", "所属装置", "所属变电站", "定值项目", "整定值", "计算依据", "整定人", "审核人", "定值状态"]
 const actions = ["提交整定", "审核定值", "作废定值"]
 const statuses = ["待整定", "整定中", "已审核", "已作废"]
 const stats = [{"label": "待整定定值单", "value": 0}, {"label": "整定中定值单", "value": 0}, {"label": "已作废定值单", "value": 0}]
@@ -91,7 +95,8 @@ const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const pendingOnly = ref(false)
+const filterFields = ["定值单号", "所属装置", "定值项目"]
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
@@ -101,6 +106,7 @@ const statusSummary = computed(() =>
 
 function resetFilters() {
   filters.value = {}
+  pendingOnly.value = false
   reload()
 }
 
@@ -126,8 +132,11 @@ function reload() {
   errorMessage.value = ''
   try {
     const payload = listEntries(meta.key, filters.value)
-    rows.value = payload.items
-    total.value = payload.total
+    const items = pendingOnly.value
+      ? payload.items.filter((row) => String(row.status) === '待整定')
+      : payload.items
+    rows.value = items
+    total.value = items.length
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '定值整定列表读取失败'
   }

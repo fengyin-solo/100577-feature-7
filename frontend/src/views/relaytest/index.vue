@@ -22,6 +22,7 @@
       <span v-for="item in statusSummary" :key="item.status" class="legend-item">
         {{ item.status }}：{{ item.count }}
       </span>
+      <span class="legend-item">装置名称按装置编号关联台账；判定合格会同步到定值整定待整定清单，台账上次校验日以最近一次校验记录为准</span>
     </p>
 
     <form class="filter-bar" @submit.prevent="reload">
@@ -77,12 +78,12 @@ import {
   downloadEntries,
   listEntries,
   moduleMeta,
-  runAction as applyAction,
+  runRelayTestAction as applyAction,
 } from '@/api/local-service'
 import type { EntryRow } from '@/data/types'
 
 const meta = moduleMeta('relaytest')
-const columns = ["校验编号", "装置名称", "校验项目", "动作值", "返回值", "校验人", "校验日期", "校验状态"]
+const columns = ["校验编号", "所属变电站", "装置名称", "装置型号", "校验项目", "动作值", "返回值", "校验人", "校验日期", "校验状态"]
 const actions = ["提交校验", "判定合格", "标记不合格"]
 const statuses = ["待校验", "校验中", "校验合格", "校验不合格"]
 const stats = [{"label": "待校验装置", "value": 0}, {"label": "校验合格装置", "value": 0}, {"label": "校验不合格装置", "value": 0}]
@@ -91,7 +92,7 @@ const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const filterFields = ["装置名称", "装置型号", "校验项目"]
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
@@ -114,7 +115,7 @@ function openCreate() {
 
 function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
-  const result = applyAction(meta.key, Number(row.id), action)
+  const result = applyAction(Number(row.id), action)
   if (!result.ok) {
     errorMessage.value = result.message
     return
